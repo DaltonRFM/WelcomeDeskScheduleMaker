@@ -6,10 +6,6 @@ Takes weekly availability (currently tracked by hand in a Google Sheet) plus
 schedule requests (collected via Google Form) and produces a shift schedule
 that satisfies coverage, hour, and rotation requirements.
 
-## Status
-🚧 Early scaffolding — building incrementally. See `docs/PLANNING.md` for the
-full requirements/constraints list and `docs/ROADMAP.md` for build order.
-
 ## Run Tests
 python -m pytest tests/ -v
 
