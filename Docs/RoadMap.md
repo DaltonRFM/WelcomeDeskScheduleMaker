@@ -3,7 +3,7 @@
 Each step should be small enough to finish and test in one sitting.
 
 - [x] **Step 0** — Repo scaffold
-- [ ] **Step 1** — Define the core data model (Person, TimeSlot, Availability,
+- [x] **Step 1** — Define the core data model (Person, TimeSlot, Availability,
       Shift, Station) as plain Python classes/dataclasses, no solver yet
 - [ ] **Step 2** — Write a parser that turns an exported availability sheet
       (CSV) into the data model — no Google API auth yet, just local files

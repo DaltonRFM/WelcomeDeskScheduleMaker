@@ -10,6 +10,9 @@ that satisfies coverage, hour, and rotation requirements.
 🚧 Early scaffolding — building incrementally. See `docs/PLANNING.md` for the
 full requirements/constraints list and `docs/ROADMAP.md` for build order.
 
+## Run Tests
+python -m pytest tests/ -v
+
 ## Stack (planned)
 - Python 3.11+
 - [OR-Tools](https://developers.google.com/optimization) (CP-SAT solver) for
