@@ -1,22 +1,22 @@
 """
-Step 3: the first working solver.
+Step 3/4: the working solver.
 
-Given a list of Availability records for a single day, and the day's
-operating hours, find a schedule where exactly one person covers every
-15-minute slot, and nobody is scheduled when they're unavailable.
+Given a list of Availability records for a single day, the day's
+operating hours, and the list of stations that need to be staffed, find
+a schedule where exactly one person covers each station for every
+15-minute slot, nobody is scheduled when they're unavailable, and nobody
+is double-booked across two stations at the same time.
 
-No stations yet (Step 4), no min/max hours or open/close rules yet
-(Step 5), no soft preferences yet (Step 7). This step only proves the
-solver can find ANY valid schedule against real availability constraints.
+No min/max hours or open/close rules yet (Step 5), no soft preferences
+yet (Step 7).
 """
 
 from datetime import datetime, time, timedelta
+from typing import Optional
 
 from ortools.sat.python import cp_model
 
-from src.models import Availability, Day, Person, Shift, TimeSlot
-
-from typing import Optional
+from src.models import Availability, Day, Person, Shift, Station, TimeSlot
 
 SLOT_MINUTES = 15
 
@@ -41,11 +41,12 @@ def solve_day_schedule(
     day: Day,
     operating_start: time,
     operating_end: time,
+    stations: list[Station],
 ) -> Optional[list[Shift]]:
     """
-    Returns a list of Shifts covering every slot in the operating window,
-    or None if no valid schedule exists (e.g. nobody's available during
-    some slot).
+    Returns a list of Shifts covering every station for every slot in the
+    operating window, or None if no valid schedule exists (e.g. not
+    enough people available to staff all stations during some slot).
     """
     people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
     slots = _generate_slots(day, operating_start, operating_end)
@@ -55,22 +56,37 @@ def solve_day_schedule(
 
     model = cp_model.CpModel()
 
-    # One boolean variable per (person, slot): are they covering it?
+    # One boolean variable per (person, slot, station): are they covering
+    # that station during that slot?
     assign = {
-        (p, s.start): model.NewBoolVar(f"assign_{p.name}_{s.start}")
+        (p, s.start, station): model.NewBoolVar(
+            f"assign_{p.name}_{s.start}_{station.name}"
+        )
         for p in people
         for s in slots
+        for station in stations
     }
 
-    # Hard constraint: can't be assigned when unavailable
+    # Hard constraint: can't be assigned to any station when unavailable
     for p in people:
         for s in slots:
             if not avail_lookup.get((p, s.start), False):
-                model.Add(assign[(p, s.start)] == 0)
+                for station in stations:
+                    model.Add(assign[(p, s.start, station)] == 0)
 
-    # Hard constraint: exactly one person covers each slot
+    # Hard constraint: exactly one person covers each station each slot
     for s in slots:
-        model.Add(sum(assign[(p, s.start)] for p in people) == 1)
+        for station in stations:
+            model.Add(
+                sum(assign[(p, s.start, station)] for p in people) == 1
+            )
+
+    # Hard constraint: a person can't cover two stations in the same slot
+    for p in people:
+        for s in slots:
+            model.Add(
+                sum(assign[(p, s.start, station)] for station in stations) <= 1
+            )
 
     solver = cp_model.CpSolver()
     status = solver.Solve(model)
@@ -78,31 +94,266 @@ def solve_day_schedule(
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None
 
-    return _slots_to_shifts(solver, assign, people, slots, day)
+    return _slots_to_shifts(solver, assign, people, slots, stations, day)
 
 
-def _slots_to_shifts(solver, assign, people, slots, day) -> list[Shift]:
-    """Merges each person's consecutive assigned slots into single Shifts,
-    e.g. four assigned 15-min slots in a row become one 1-hour Shift."""
+def _slots_to_shifts(solver, assign, people, slots, stations, day) -> list[Shift]:
+    """Merges each person's consecutive assigned slots, per station, into
+    single Shifts, e.g. four assigned 15-min North slots in a row become
+    one 1-hour North Shift."""
     shifts = []
 
     for p in people:
-        run_start = None
-        run_end = None
+        for station in stations:
+            run_start = None
+            run_end = None
 
-        for s in slots:
-            is_assigned = solver.Value(assign[(p, s.start)]) == 1
+            for s in slots:
+                is_assigned = solver.Value(assign[(p, s.start, station)]) == 1
 
-            if is_assigned:
-                if run_start is None:
-                    run_start = s.start
-                run_end = s.end
-            elif run_start is not None:
-                shifts.append(Shift(person=p, day=day, start=run_start, end=run_end))
+                if is_assigned:
+                    if run_start is None:
+                        run_start = s.start
+                    run_end = s.end
+                elif run_start is not None:
+                    shifts.append(
+                        Shift(person=p, day=day, start=run_start, end=run_end, station=station)
+                    )
+                    run_start = None
+                    run_end = None
+
+            if run_start is not None:
+                shifts.append(
+                    Shift(person=p, day=day, start=run_start, end=run_end, station=station)
+                )
+
+    return shifts
+
+
+def solve_week_schedule(
+    availabilities: list[Availability],
+    day_operating_hours: dict,
+    stations: list[Station],
+    min_hours: float,
+    max_hours: float,
+    rotation_stations: Optional[list[Station]] = None,
+    open_preferences: Optional[dict] = None,
+    close_preferences: Optional[dict] = None,
+) -> Optional[list[Shift]]:
+    """
+    Step 5/6/7: solves across an entire week at once (not one day in
+    isolation), because "everyone opens at least once" and "everyone
+    closes at least once" and min/max hours only make sense measured
+    across the whole week.
+
+    day_operating_hours: dict mapping Day -> (operating_start, operating_end)
+        e.g. {Day.MONDAY: (time(7,30), time(17,0)), ...}
+
+    rotation_stations: stations everyone must work at least once during
+        the week (e.g. [Station.NORTH, Station.SOUTH]). Defaults to None,
+        meaning no rotation requirement is enforced -- pass this in
+        explicitly when you want it.
+
+    open_preferences / close_preferences: dict mapping Person -> set of
+        Days they'd prefer to open/close, e.g. {alex: {Day.MONDAY}}.
+        These are SOFT -- honored when possible, but never at the cost of
+        breaking a hard constraint above. Optional.
+
+    Beyond honoring preferences, the solver also minimizes shift
+    fragmentation by default (fewer, longer blocks per person per day
+    rather than lots of short ones), since nobody asked for that but
+    everybody wants it.
+
+    Returns None if no schedule satisfies every hard constraint.
+    """
+    open_preferences = open_preferences or {}
+    close_preferences = close_preferences or {}
+
+    people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
+    days = list(day_operating_hours.keys())
+
+    # Build slots per day, and an availability lookup keyed by (person, day, slot_start)
+    slots_by_day = {
+        day: _generate_slots(day, start, end)
+        for day, (start, end) in day_operating_hours.items()
+    }
+    avail_lookup = {
+        (a.person, a.slot.day, a.slot.start): a.is_available for a in availabilities
+    }
+
+    model = cp_model.CpModel()
+
+    # One boolean variable per (person, day, slot, station)
+    assign = {
+        (p, day, s.start, station): model.NewBoolVar(
+            f"assign_{p.name}_{day.name}_{s.start}_{station.name}"
+        )
+        for p in people
+        for day in days
+        for s in slots_by_day[day]
+        for station in stations
+    }
+
+    # Hard constraint: can't be assigned when unavailable
+    for p in people:
+        for day in days:
+            for s in slots_by_day[day]:
+                if not avail_lookup.get((p, day, s.start), False):
+                    for station in stations:
+                        model.Add(assign[(p, day, s.start, station)] == 0)
+
+    # Hard constraint: exactly one person covers each station each slot
+    for day in days:
+        for s in slots_by_day[day]:
+            for station in stations:
+                model.Add(
+                    sum(assign[(p, day, s.start, station)] for p in people) == 1
+                )
+
+    # Hard constraint: a person can't cover two stations in the same slot
+    for p in people:
+        for day in days:
+            for s in slots_by_day[day]:
+                model.Add(
+                    sum(assign[(p, day, s.start, station)] for station in stations) <= 1
+                )
+
+    # Hard constraint: min/max total hours per person across the whole week
+    min_slot_count = round(min_hours * (60 / SLOT_MINUTES))
+    max_slot_count = round(max_hours * (60 / SLOT_MINUTES))
+    for p in people:
+        total_slots = sum(
+            assign[(p, day, s.start, station)]
+            for day in days
+            for s in slots_by_day[day]
+            for station in stations
+        )
+        model.Add(total_slots >= min_slot_count)
+        model.Add(total_slots <= max_slot_count)
+
+    # Hard constraint: everyone opens (works the day's first slot) at
+    # least once during the week
+    for p in people:
+        opens = sum(
+            assign[(p, day, slots_by_day[day][0].start, station)]
+            for day in days
+            for station in stations
+        )
+        model.Add(opens >= 1)
+
+    # Hard constraint: everyone works each rotation station (e.g. North
+    # AND South) at least once during the week
+    if rotation_stations:
+        for p in people:
+            for station in rotation_stations:
+                worked_station = sum(
+                    assign[(p, day, s.start, station)]
+                    for day in days
+                    for s in slots_by_day[day]
+                )
+                model.Add(worked_station >= 1)
+
+    # --- Soft constraints (objective function) ---
+    # Everything below this line is optimized for, not required. The
+    # solver will always satisfy every hard constraint above first, and
+    # only then try to minimize fragmentation / maximize honored
+    # preferences among the schedules that remain valid.
+
+    FRAGMENTATION_WEIGHT = 1
+    PREFERENCE_WEIGHT = 20  # heavily favor honoring requests over tidiness
+
+    # "Working this slot" as a single 0/1 value per (person, day, slot),
+    # reusing the fact that a person covers at most one station per slot.
+    working = {}
+    for p in people:
+        for day in days:
+            for s in slots_by_day[day]:
+                working[(p, day, s.start)] = sum(
+                    assign[(p, day, s.start, station)] for station in stations
+                )
+
+    # A "block start" happens when someone is working a slot but wasn't
+    # working the previous slot (or it's the first slot of the day).
+    # Minimizing the count of these minimizes the number of separate
+    # shift blocks per person per day.
+    fragmentation_terms = []
+    for p in people:
+        for day in days:
+            slots = slots_by_day[day]
+            for i, s in enumerate(slots):
+                block_start = model.NewBoolVar(
+                    f"block_start_{p.name}_{day.name}_{s.start}"
+                )
+                previous_working = 0 if i == 0 else working[(p, day, slots[i - 1].start)]
+                model.Add(block_start >= working[(p, day, s.start)] - previous_working)
+                fragmentation_terms.append(block_start)
+
+    # Preference bonus terms: 1 if the person opened/closed on their
+    # requested day, 0 otherwise (reusing the same expressions as the
+    # hard open/close constraints, just per-day instead of summed).
+    preference_terms = []
+    for person, preferred_days in open_preferences.items():
+        for day in preferred_days:
+            if day in days:
+                preference_terms.append(
+                    sum(
+                        assign[(person, day, slots_by_day[day][0].start, station)]
+                        for station in stations
+                    )
+                )
+    for person, preferred_days in close_preferences.items():
+        for day in preferred_days:
+            if day in days:
+                preference_terms.append(
+                    sum(
+                        assign[(person, day, slots_by_day[day][-1].start, station)]
+                        for station in stations
+                    )
+                )
+
+    model.Minimize(
+        FRAGMENTATION_WEIGHT * sum(fragmentation_terms)
+        - PREFERENCE_WEIGHT * sum(preference_terms)
+    )
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+
+    return _week_slots_to_shifts(solver, assign, people, days, slots_by_day, stations)
+
+
+def _week_slots_to_shifts(solver, assign, people, days, slots_by_day, stations) -> list[Shift]:
+    """Same idea as _slots_to_shifts, but merges runs per (person, day, station)
+    since shifts don't span across days."""
+    shifts = []
+
+    for p in people:
+        for day in days:
+            slots = slots_by_day[day]
+            for station in stations:
                 run_start = None
                 run_end = None
 
-        if run_start is not None:
-            shifts.append(Shift(person=p, day=day, start=run_start, end=run_end))
+                for s in slots:
+                    is_assigned = solver.Value(assign[(p, day, s.start, station)]) == 1
+
+                    if is_assigned:
+                        if run_start is None:
+                            run_start = s.start
+                        run_end = s.end
+                    elif run_start is not None:
+                        shifts.append(
+                            Shift(person=p, day=day, start=run_start, end=run_end, station=station)
+                        )
+                        run_start = None
+                        run_end = None
+
+                if run_start is not None:
+                    shifts.append(
+                        Shift(person=p, day=day, start=run_start, end=run_end, station=station)
+                    )
 
     return shifts

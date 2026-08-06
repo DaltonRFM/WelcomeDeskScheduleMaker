@@ -29,8 +29,7 @@ class Day(Enum):
 @dataclass(frozen=True)
 class Person:
     """
-    A student worker. Everyone is trained/eligible for all three stations,
-    so there's no per-person station restriction to track right now.
+    A Welcome Desk student
     """
     name: str
 
