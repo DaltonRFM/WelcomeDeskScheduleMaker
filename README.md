@@ -1,6 +1,6 @@
 # Welcome Desk Scheduler
 
-Automated shift scheduling for the Leeds Welcome Desk student worker team.
+Automated shift scheduling for the Welcome Desk student worker team.
 
 Takes weekly availability (currently tracked by hand in a Google Sheet) plus
 schedule requests (collected via Google Form) and produces a shift schedule

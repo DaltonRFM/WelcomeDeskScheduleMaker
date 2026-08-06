@@ -9,6 +9,7 @@ objects from a CSV; Step 3+ will hand them to OR-Tools.
 from dataclasses import dataclass, field
 from datetime import date, time
 from enum import Enum
+from typing import Optional
 
 
 class Station(Enum):
@@ -72,15 +73,19 @@ class ScheduleRequest:
 @dataclass
 class Shift:
     """
-    An actual scheduled block: one person, one station, one contiguous
-    stretch of time on one day. This is what the solver ultimately
-    produces — a list of these is the finished schedule.
+    An actual scheduled block: one person, one contiguous stretch of time
+    on one day, optionally assigned to a station. This is what the solver
+    ultimately produces — a list of these is the finished schedule.
+
+    station is optional because Step 3 solves for "who covers this time
+    slot" without station assignment yet — Step 4 adds station logic and
+    will always set it from that point on.
     """
     person: Person
-    station: Station
     day: Day
     start: time
     end: time
+    station: Optional[Station] = None
 
     def duration_hours(self) -> float:
         start_minutes = self.start.hour * 60 + self.start.minute
