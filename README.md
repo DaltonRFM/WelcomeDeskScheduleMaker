@@ -11,7 +11,7 @@ The goal of this project is future WDSAM can use it to help with making a workin
 ## Run Tests
 python -m pytest tests/ -v
 
-## Stack (planned)
+## Stack 
 - Python 3.11+
 - [OR-Tools](https://developers.google.com/optimization) (CP-SAT solver) for
   constraint satisfaction / optimization
