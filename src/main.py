@@ -1,0 +1,81 @@
+"""
+Step 8: the real end-to-end pipeline.
+
+Reads one availability CSV per weekday (exported from the Apps Script
+Y/N conversion -- see tools/apps_script_color_to_yn.gs), runs the
+solver, and writes the finished schedule out to a CSV.
+
+This still isn't pulling live from Google Sheets (that's a later step --
+auth setup is its own chunk of work). For now, you export each day's
+"_YN" tab as a CSV into data/, named to match CSV_FILES below, and run
+this script.
+
+Usage:
+    python -m src.main
+"""
+
+from datetime import time
+
+from src.availability_parser import parse_availability_csv
+from src.models import Day, Station
+from src.output_writer import write_schedule_csv
+from src.solver import solve_week_schedule
+
+# Update these paths once you've exported real Y/N CSVs from the Apps
+# Script for each day. Days you don't have a file for yet can just be
+# omitted from this dict -- the pipeline will only schedule the days
+# present here.
+CSV_FILES = {
+    Day.MONDAY: "data/monday_availability.csv",
+    Day.TUESDAY: "data/tuesday_availability.csv",
+    Day.WEDNESDAY: "data/wednesday_availability.csv",
+    Day.THURSDAY: "data/thursday_availability.csv",
+    Day.FRIDAY: "data/friday_availability.csv",
+}
+
+# Business rules from docs/PLANNING.md
+DAY_OPERATING_HOURS = {
+    Day.MONDAY: (time(7, 30), time(17, 0)),
+    Day.TUESDAY: (time(7, 30), time(17, 0)),
+    Day.WEDNESDAY: (time(7, 30), time(17, 0)),
+    Day.THURSDAY: (time(7, 30), time(17, 0)),
+    Day.FRIDAY: (time(8, 0), time(17, 0)),
+}
+
+STATIONS = [Station.NORTH, Station.SOUTH, Station.DEANS_SUITE]
+ROTATION_STATIONS = [Station.NORTH, Station.SOUTH]
+MIN_HOURS = 10.0
+MAX_HOURS = 12.5
+
+OUTPUT_PATH = "data/generated_schedule.csv"
+
+
+def main():
+    all_availabilities = []
+    for day, filepath in CSV_FILES.items():
+        all_availabilities.extend(parse_availability_csv(filepath, day))
+
+    active_day_hours = {
+        day: hours for day, hours in DAY_OPERATING_HOURS.items() if day in CSV_FILES
+    }
+
+    shifts = solve_week_schedule(
+        availabilities=all_availabilities,
+        day_operating_hours=active_day_hours,
+        stations=STATIONS,
+        min_hours=MIN_HOURS,
+        max_hours=MAX_HOURS,
+        rotation_stations=ROTATION_STATIONS,
+    )
+
+    if shifts is None:
+        print("No valid schedule found -- constraints are too tight to satisfy.")
+        print("Try loosening min/max hours, or double-check availability data.")
+        return
+
+    write_schedule_csv(shifts, OUTPUT_PATH)
+    print(f"Schedule written to {OUTPUT_PATH} ({len(shifts)} shifts).")
+
+
+if __name__ == "__main__":
+    main()
