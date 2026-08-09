@@ -36,7 +36,8 @@ def test_finds_a_valid_week_schedule():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=1.0, min_shift_minutes=0,
     )
     assert shifts is not None
     assert len(shifts) > 0
@@ -49,7 +50,8 @@ def test_everyone_meets_min_and_max_hours():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=1.0, min_shift_minutes=0,
     )
 
     for person in (ALEX, BOB):
@@ -66,7 +68,8 @@ def test_everyone_opens_at_least_once():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=1.0, min_shift_minutes=0,
     )
 
     openers = {s.person for s in shifts if s.start == time(7, 30)}
@@ -80,7 +83,8 @@ def test_everyone_closes_at_least_once():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=1.0, min_shift_minutes=0,
     )
 
     closers = {s.person for s in shifts if s.end == time(8, 0)}
@@ -96,7 +100,8 @@ def test_returns_none_when_hours_impossible():
     ]
     day_hours = {Day.MONDAY: (time(7, 30), time(7, 45))}
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=2.0, max_hours=5.0
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=2.0, max_hours=5.0, min_shift_minutes=0,
     )
     assert shifts is None
 
@@ -129,6 +134,7 @@ def test_everyone_works_every_rotation_station_at_least_once():
         min_hours=0.5,
         max_hours=1.0,
         rotation_stations=[Station.NORTH, Station.SOUTH],
+        min_shift_minutes=0,
     )
     assert shifts is not None
 
@@ -152,6 +158,7 @@ def test_rotation_not_enforced_when_not_requested():
         {Station.NORTH: 1, Station.SOUTH: 1},
         min_hours=0.5,
         max_hours=1.0,
+        min_shift_minutes=0,
     )
     assert shifts is not None
 
@@ -189,7 +196,8 @@ def test_fragmentation_is_minimized():
     availabilities.append(_avail(BOB, Day.TUESDAY, time(7, 45), time(8, 0), True))
 
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.5
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=1.5, min_shift_minutes=0,
     )
 
     assert shifts is not None
@@ -219,6 +227,7 @@ def test_open_preference_is_honored_when_feasible():
         min_hours=0.5,
         max_hours=1.0,
         open_preferences={ALEX: {Day.MONDAY}},
+        min_shift_minutes=0,
     )
 
     assert shifts is not None
@@ -226,6 +235,7 @@ def test_open_preference_is_honored_when_feasible():
         s.person for s in shifts if s.day == Day.MONDAY and s.start == time(7, 30)
     )
     assert monday_opener == ALEX
+
 
 def test_schedule_still_solves_when_someone_cant_open_or_close():
     """
@@ -248,7 +258,8 @@ def test_schedule_still_solves_when_someone_cant_open_or_close():
     ]
 
     shifts = solve_week_schedule(
-        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.25, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.25, max_hours=1.0, min_shift_minutes=0,
     )
 
     assert shifts is not None
@@ -279,6 +290,7 @@ def test_flexible_station_resolves_otherwise_infeasible_schedule():
         min_hours=0.25,
         max_hours=0.25,
         flexible_stations={Station.SOUTH},
+        min_shift_minutes=0,
     )
 
     assert shifts is not None
@@ -307,9 +319,58 @@ def test_flexible_station_still_fully_staffed_when_free_to_do_so():
         min_hours=0.25,
         max_hours=0.25,
         flexible_stations={Station.SOUTH},
+        min_shift_minutes=0,
     )
 
     assert shifts is not None
     stations_covered = {s.station for s in shifts}
     assert Station.NORTH in stations_covered
     assert Station.SOUTH in stations_covered
+
+
+def test_no_shift_shorter_than_minimum():
+    """
+    A full 3-hour Monday (12 slots), single station, 2 people both fully
+    available the entire time. With the default 90-min (6-slot) minimum,
+    every resulting shift should be at least 90 minutes -- no 15 or
+    30-min slivers, even though nothing else here forces long shifts.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(10, 30))}
+    availabilities = []
+    h, m = 7, 30
+    slots = []
+    for _ in range(12):
+        start = time(h, m)
+        m += 15
+        if m >= 60:
+            m -= 60
+            h += 1
+        end = time(h, m)
+        slots.append((start, end))
+
+    for start, end in slots:
+        availabilities.append(_avail(ALEX, Day.MONDAY, start, end, True))
+        availabilities.append(_avail(BOB, Day.MONDAY, start, end, True))
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.25, max_hours=3.0,
+    )  # min_shift_minutes uses the 90-min default here
+
+    assert shifts is not None
+    for shift in shifts:
+        assert shift.duration_hours() >= 1.5
+
+
+def test_min_shift_length_can_be_disabled():
+    # Same tiny 15-min window used throughout other tests -- only
+    # feasible at all because min_shift_minutes=0 turns the rule off.
+    availabilities = [
+        _avail(ALEX, Day.MONDAY, time(7, 30), time(7, 45), True),
+    ]
+    day_hours = {Day.MONDAY: (time(7, 30), time(7, 45))}
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.25, max_hours=0.25, min_shift_minutes=0,
+    )
+    assert shifts is not None

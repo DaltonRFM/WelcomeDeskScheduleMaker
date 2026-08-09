@@ -150,6 +150,7 @@ def solve_week_schedule(
     open_preferences: Optional[dict] = None,
     close_preferences: Optional[dict] = None,
     flexible_stations: Optional[set] = None,
+    min_shift_minutes: float = 90.0,
 ) -> Optional[list[Shift]]:
     """
     Steps 5/6/7: solves across an entire week at once (not one day in
@@ -184,6 +185,11 @@ def solve_week_schedule(
         it's not costly to do so (soft preference), it's just no longer
         a hard requirement. Defaults to None (every station strict,
         matching original behavior).
+
+    min_shift_minutes: no contiguous shift on one station can be
+    shorter than this. HARD constraint -- if a block starts, it
+    must run at least this long, or it can't start there at all.
+    Defaults to 90 (minutes).
 
     Beyond honoring preferences, the solver also minimizes shift
     fragmentation by default (fewer, longer blocks per person per day
@@ -248,6 +254,38 @@ def solve_week_schedule(
                 model.Add(
                     sum(assign[(p, day, s.start, station)] for station in stations) <= 1
                 )
+
+    # Hard constraint: no shift shorter than min_shift_minutes. Applied
+    # per (person, day, station) -- a contiguous run on ONE station
+    # can't start unless it can run the full minimum length, whether
+    # that's blocked by the person's own availability ending or by the
+    # operating day ending too soon.
+    min_shift_slots = round(min_shift_minutes / SLOT_MINUTES)
+    for p in people:
+        for day in days:
+            slots = slots_by_day[day]
+            for station in stations:
+                for i, s in enumerate(slots):
+                    block_start = model.NewBoolVar(
+                        f"min_len_start_{p.name}_{day.name}_{s.start}_{station.name}"
+                    )
+                    previous = (
+                        0 if i == 0 else assign[(p, day, slots[i - 1].start, station)]
+                    )
+                    model.Add(
+                        block_start >= assign[(p, day, s.start, station)] - previous
+                    )
+
+                    if len(slots) - i < min_shift_slots:
+                        # Not enough room left in the day to reach the
+                        # minimum length -- a block can't start here.
+                        model.Add(block_start == 0)
+                    else:
+                        for offset in range(1, min_shift_slots):
+                            model.Add(
+                                assign[(p, day, slots[i + offset].start, station)]
+                                >= block_start
+                            )
 
     # Hard constraint: min/max total hours per person across the whole week
     min_slot_count = round(min_hours * (60 / SLOT_MINUTES))
