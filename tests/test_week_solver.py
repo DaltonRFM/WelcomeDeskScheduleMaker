@@ -36,7 +36,7 @@ def test_finds_a_valid_week_schedule():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, [Station.NORTH], min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
     )
     assert shifts is not None
     assert len(shifts) > 0
@@ -49,7 +49,7 @@ def test_everyone_meets_min_and_max_hours():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, [Station.NORTH], min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
     )
 
     for person in (ALEX, BOB):
@@ -66,7 +66,7 @@ def test_everyone_opens_at_least_once():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, [Station.NORTH], min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
     )
 
     openers = {s.person for s in shifts if s.start == time(7, 30)}
@@ -80,7 +80,7 @@ def test_everyone_closes_at_least_once():
         Day.TUESDAY: (time(7, 30), time(8, 0)),
     }
     shifts = solve_week_schedule(
-        availabilities, day_hours, [Station.NORTH], min_hours=0.5, max_hours=1.0
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.0
     )
 
     closers = {s.person for s in shifts if s.end == time(8, 0)}
@@ -96,7 +96,7 @@ def test_returns_none_when_hours_impossible():
     ]
     day_hours = {Day.MONDAY: (time(7, 30), time(7, 45))}
     shifts = solve_week_schedule(
-        availabilities, day_hours, [Station.NORTH], min_hours=2.0, max_hours=5.0
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=2.0, max_hours=5.0
     )
     assert shifts is None
 
@@ -115,6 +115,7 @@ def build_two_station_two_day_availabilities():
             data.append(_avail(person, day, time(7, 45), time(8, 0), True))
     return data
 
+
 def test_everyone_works_every_rotation_station_at_least_once():
     availabilities = build_two_station_two_day_availabilities()
     day_hours = {
@@ -124,7 +125,7 @@ def test_everyone_works_every_rotation_station_at_least_once():
     shifts = solve_week_schedule(
         availabilities,
         day_hours,
-        [Station.NORTH, Station.SOUTH],
+        {Station.NORTH: 1, Station.SOUTH: 1},
         min_hours=0.5,
         max_hours=1.0,
         rotation_stations=[Station.NORTH, Station.SOUTH],
@@ -148,7 +149,7 @@ def test_rotation_not_enforced_when_not_requested():
     shifts = solve_week_schedule(
         availabilities,
         day_hours,
-        [Station.NORTH, Station.SOUTH],
+        {Station.NORTH: 1, Station.SOUTH: 1},
         min_hours=0.5,
         max_hours=1.0,
     )
@@ -188,7 +189,7 @@ def test_fragmentation_is_minimized():
     availabilities.append(_avail(BOB, Day.TUESDAY, time(7, 45), time(8, 0), True))
 
     shifts = solve_week_schedule(
-        availabilities, day_hours, [Station.NORTH], min_hours=0.5, max_hours=1.5
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.5, max_hours=1.5
     )
 
     assert shifts is not None
@@ -214,7 +215,7 @@ def test_open_preference_is_honored_when_feasible():
     shifts = solve_week_schedule(
         availabilities,
         day_hours,
-        [Station.NORTH],
+        {Station.NORTH: 1},
         min_hours=0.5,
         max_hours=1.0,
         open_preferences={ALEX: {Day.MONDAY}},
@@ -225,3 +226,90 @@ def test_open_preference_is_honored_when_feasible():
         s.person for s in shifts if s.day == Day.MONDAY and s.start == time(7, 30)
     )
     assert monday_opener == ALEX
+
+def test_schedule_still_solves_when_someone_cant_open_or_close():
+    """
+    Bob is only ever available for the two MIDDLE slots of a 4-slot day
+    -- never the first (open) or last (close) slot. Under the old hard
+    "everyone opens/closes at least once" rule this made the whole week
+    infeasible. Now that it's a soft preference, the solver should still
+    find a valid schedule; Bob just won't open or close, and that's fine.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(8, 30))}
+    availabilities = [
+        _avail(ALEX, Day.MONDAY, time(7, 30), time(7, 45), True),
+        _avail(ALEX, Day.MONDAY, time(7, 45), time(8, 0), True),
+        _avail(ALEX, Day.MONDAY, time(8, 0), time(8, 15), True),
+        _avail(ALEX, Day.MONDAY, time(8, 15), time(8, 30), True),
+        _avail(BOB, Day.MONDAY, time(7, 30), time(7, 45), False),
+        _avail(BOB, Day.MONDAY, time(7, 45), time(8, 0), True),
+        _avail(BOB, Day.MONDAY, time(8, 0), time(8, 15), True),
+        _avail(BOB, Day.MONDAY, time(8, 15), time(8, 30), False),
+    ]
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1}, min_hours=0.25, max_hours=1.0
+    )
+
+    assert shifts is not None
+    bob_opened = any(s.person == BOB and s.start == time(7, 30) for s in shifts)
+    bob_closed = any(s.person == BOB and s.end == time(8, 30) for s in shifts)
+    assert not bob_opened
+    assert not bob_closed
+
+
+def test_flexible_station_resolves_otherwise_infeasible_schedule():
+    """
+    Only Alex is ever available -- nobody else. A second station
+    (South) needs 1 person too, but with only 1 person total, both
+    North and South can never be simultaneously staffed at capacity 1
+    each. If South is flexible, the solver should still find a valid
+    schedule (Alex covers North, South just goes unstaffed). If South
+    were NOT flexible, this would be infeasible.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(7, 45))}
+    availabilities = [
+        _avail(ALEX, Day.MONDAY, time(7, 30), time(7, 45), True),
+    ]
+
+    shifts = solve_week_schedule(
+        availabilities,
+        day_hours,
+        {Station.NORTH: 1, Station.SOUTH: 1},
+        min_hours=0.25,
+        max_hours=0.25,
+        flexible_stations={Station.SOUTH},
+    )
+
+    assert shifts is not None
+    assert any(s.station == Station.NORTH for s in shifts)
+    assert not any(s.station == Station.SOUTH for s in shifts)
+
+
+def test_flexible_station_still_fully_staffed_when_free_to_do_so():
+    """
+    2 people, both fully available. South is flexible, but with enough
+    people around to cover it at no cost to anything else, the solver
+    should still fill it -- flexible doesn't mean "leave it empty by
+    default," it means "allowed to be empty when something else needs
+    priority."
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(7, 45))}
+    availabilities = [
+        _avail(ALEX, Day.MONDAY, time(7, 30), time(7, 45), True),
+        _avail(BOB, Day.MONDAY, time(7, 30), time(7, 45), True),
+    ]
+
+    shifts = solve_week_schedule(
+        availabilities,
+        day_hours,
+        {Station.NORTH: 1, Station.SOUTH: 1},
+        min_hours=0.25,
+        max_hours=0.25,
+        flexible_stations={Station.SOUTH},
+    )
+
+    assert shifts is not None
+    stations_covered = {s.station for s in shifts}
+    assert Station.NORTH in stations_covered
+    assert Station.SOUTH in stations_covered

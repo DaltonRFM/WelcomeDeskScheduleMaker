@@ -42,10 +42,15 @@ DAY_OPERATING_HOURS = {
     Day.FRIDAY: (time(8, 0), time(17, 0)),
 }
 
-STATIONS = [Station.NORTH, Station.SOUTH, Station.DEANS_SUITE]
+STATION_CAPACITY = {
+    Station.NORTH: 2,
+    Station.SOUTH: 2,
+    Station.DEANS_SUITE: 1,
+}
+FLEXIBLE_STATIONS = {Station.DEANS_SUITE}
 ROTATION_STATIONS = [Station.NORTH, Station.SOUTH]
-MIN_HOURS = 10.0
-MAX_HOURS = 12.5
+MIN_HOURS = 9.0
+MAX_HOURS = 13.0
 
 OUTPUT_PATH = "data/generated_schedule.csv"
 
@@ -62,10 +67,11 @@ def main():
     shifts = solve_week_schedule(
         availabilities=all_availabilities,
         day_operating_hours=active_day_hours,
-        stations=STATIONS,
+        station_capacity=STATION_CAPACITY,
         min_hours=MIN_HOURS,
         max_hours=MAX_HOURS,
         rotation_stations=ROTATION_STATIONS,
+        flexible_stations=FLEXIBLE_STATIONS
     )
 
     if shifts is None:

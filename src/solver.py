@@ -1,14 +1,15 @@
 """
-Step 3/4: the working solver.
+Steps 3-7: the working solver.
 
-Given a list of Availability records for a single day, the day's
-operating hours, and the list of stations that need to be staffed, find
-a schedule where exactly one person covers each station for every
-15-minute slot, nobody is scheduled when they're unavailable, and nobody
-is double-booked across two stations at the same time.
+Given a list of Availability records, operating hours, and how many
+people each station needs staffed simultaneously (station_capacity),
+find a schedule where every station has the right number of people
+covering it every 15-minute slot, nobody is scheduled when they're
+unavailable, and nobody is double-booked across two stations at once.
 
-No min/max hours or open/close rules yet (Step 5), no soft preferences
-yet (Step 7).
+station_capacity example: {Station.NORTH: 2, Station.SOUTH: 2,
+Station.DEANS_SUITE: 1} means North and South each need 2 people
+working simultaneously, Dean's Suite needs 1.
 """
 
 from datetime import datetime, time, timedelta
@@ -41,13 +42,18 @@ def solve_day_schedule(
     day: Day,
     operating_start: time,
     operating_end: time,
-    stations: list[Station],
+    station_capacity: dict,
 ) -> Optional[list[Shift]]:
     """
-    Returns a list of Shifts covering every station for every slot in the
-    operating window, or None if no valid schedule exists (e.g. not
-    enough people available to staff all stations during some slot).
+    Returns a list of Shifts covering every station (at its required
+    headcount) for every slot in the operating window, or None if no
+    valid schedule exists.
+
+    station_capacity: dict mapping Station -> how many people that
+        station needs staffed at the same time, e.g.
+        {Station.NORTH: 2, Station.SOUTH: 2, Station.DEANS_SUITE: 1}
     """
+    stations = list(station_capacity.keys())
     people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
     slots = _generate_slots(day, operating_start, operating_end)
 
@@ -74,11 +80,13 @@ def solve_day_schedule(
                 for station in stations:
                     model.Add(assign[(p, s.start, station)] == 0)
 
-    # Hard constraint: exactly one person covers each station each slot
+    # Hard constraint: each station is covered by exactly its required
+    # headcount every slot (not always 1 -- e.g. North might need 2)
     for s in slots:
         for station in stations:
             model.Add(
-                sum(assign[(p, s.start, station)] for p in people) == 1
+                sum(assign[(p, s.start, station)] for p in people)
+                == station_capacity[station]
             )
 
     # Hard constraint: a person can't cover two stations in the same slot
@@ -89,6 +97,7 @@ def solve_day_schedule(
             )
 
     solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 30.0
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -100,7 +109,8 @@ def solve_day_schedule(
 def _slots_to_shifts(solver, assign, people, slots, stations, day) -> list[Shift]:
     """Merges each person's consecutive assigned slots, per station, into
     single Shifts, e.g. four assigned 15-min North slots in a row become
-    one 1-hour North Shift."""
+    one 1-hour North Shift. Works the same whether a station has 1 or
+    many people assigned, since each person is tracked independently."""
     shifts = []
 
     for p in people:
@@ -133,21 +143,26 @@ def _slots_to_shifts(solver, assign, people, slots, stations, day) -> list[Shift
 def solve_week_schedule(
     availabilities: list[Availability],
     day_operating_hours: dict,
-    stations: list[Station],
+    station_capacity: dict,
     min_hours: float,
     max_hours: float,
     rotation_stations: Optional[list[Station]] = None,
     open_preferences: Optional[dict] = None,
     close_preferences: Optional[dict] = None,
+    flexible_stations: Optional[set] = None,
 ) -> Optional[list[Shift]]:
     """
-    Step 5/6/7: solves across an entire week at once (not one day in
+    Steps 5/6/7: solves across an entire week at once (not one day in
     isolation), because "everyone opens at least once" and "everyone
     closes at least once" and min/max hours only make sense measured
     across the whole week.
 
     day_operating_hours: dict mapping Day -> (operating_start, operating_end)
         e.g. {Day.MONDAY: (time(7,30), time(17,0)), ...}
+
+    station_capacity: dict mapping Station -> how many people that
+        station needs staffed at the same time, e.g.
+        {Station.NORTH: 2, Station.SOUTH: 2, Station.DEANS_SUITE: 1}
 
     rotation_stations: stations everyone must work at least once during
         the week (e.g. [Station.NORTH, Station.SOUTH]). Defaults to None,
@@ -159,6 +174,17 @@ def solve_week_schedule(
         These are SOFT -- honored when possible, but never at the cost of
         breaking a hard constraint above. Optional.
 
+    flexible_stations: set of Stations allowed to go BELOW their listed
+        capacity in a given slot when needed (e.g. Dean's Suite doesn't
+        strictly need to be staffed every single moment -- it can sit
+        vacant rather than force someone over max_hours or otherwise
+        break a hard constraint). Stations NOT in this set are still
+        held to their exact capacity every slot, no exceptions. The
+        solver still tries to fully staff flexible stations whenever
+        it's not costly to do so (soft preference), it's just no longer
+        a hard requirement. Defaults to None (every station strict,
+        matching original behavior).
+
     Beyond honoring preferences, the solver also minimizes shift
     fragmentation by default (fewer, longer blocks per person per day
     rather than lots of short ones), since nobody asked for that but
@@ -168,7 +194,8 @@ def solve_week_schedule(
     """
     open_preferences = open_preferences or {}
     close_preferences = close_preferences or {}
-
+    flexible_stations = flexible_stations or set()
+    stations = list(station_capacity.keys())
     people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
     days = list(day_operating_hours.keys())
 
@@ -202,13 +229,17 @@ def solve_week_schedule(
                     for station in stations:
                         model.Add(assign[(p, day, s.start, station)] == 0)
 
-    # Hard constraint: exactly one person covers each station each slot
+    # Hard constraint: each station is covered by its required headcount
+    # every slot -- EXACTLY, unless the station is in flexible_stations,
+    # in which case it's allowed to be UNDER capacity (never over).
     for day in days:
         for s in slots_by_day[day]:
             for station in stations:
-                model.Add(
-                    sum(assign[(p, day, s.start, station)] for p in people) == 1
-                )
+                covering = sum(assign[(p, day, s.start, station)] for p in people)
+                if station in flexible_stations:
+                    model.Add(covering <= station_capacity[station])
+                else:
+                    model.Add(covering == station_capacity[station])
 
     # Hard constraint: a person can't cover two stations in the same slot
     for p in people:
@@ -231,16 +262,6 @@ def solve_week_schedule(
         model.Add(total_slots >= min_slot_count)
         model.Add(total_slots <= max_slot_count)
 
-    # Hard constraint: everyone opens (works the day's first slot) at
-    # least once during the week
-    for p in people:
-        opens = sum(
-            assign[(p, day, slots_by_day[day][0].start, station)]
-            for day in days
-            for station in stations
-        )
-        model.Add(opens >= 1)
-
     # Hard constraint: everyone works each rotation station (e.g. North
     # AND South) at least once during the week
     if rotation_stations:
@@ -261,6 +282,20 @@ def solve_week_schedule(
 
     FRAGMENTATION_WEIGHT = 1
     PREFERENCE_WEIGHT = 20  # heavily favor honoring requests over tidiness
+    OPEN_CLOSE_WEIGHT = 15  # strongly prefer everyone opening/closing at least once, but not at the cost of feasibility
+    FLEXIBLE_COVERAGE_WEIGHT = 8  # prefer fully staffing flexible stations (e.g. Dean's Suite) when it doesn't cost anything else
+
+    # Soft preference: fill flexible stations (e.g. Dean's Suite) up to
+    # their listed capacity whenever it doesn't conflict with anything
+    # else. This is what stops the solver from just always leaving them
+    # empty now that they're allowed to be understaffed.
+    flexible_coverage_terms = []
+    for day in days:
+        for s in slots_by_day[day]:
+            for station in flexible_stations:
+                flexible_coverage_terms.append(
+                    sum(assign[(p, day, s.start, station)] for p in people)
+                )
 
     # "Working this slot" as a single 0/1 value per (person, day, slot),
     # reusing the fact that a person covers at most one station per slot.
@@ -288,6 +323,32 @@ def solve_week_schedule(
                 model.Add(block_start >= working[(p, day, s.start)] - previous_working)
                 fragmentation_terms.append(block_start)
 
+    # "Everyone opens/closes at least once" is IDEAL, not required --
+    # someone whose availability never includes the day's first/last
+    # slot simply can't, and that shouldn't make the whole week
+    # infeasible. has_opened[p] is a boolean bounded above by whether p
+    # actually has any opening slot assigned; the objective below
+    # rewards it being 1 whenever that's achievable.
+    open_close_terms = []
+    for p in people:
+        opens_sum = sum(
+            assign[(p, day, slots_by_day[day][0].start, station)]
+            for day in days
+            for station in stations
+        )
+        has_opened = model.NewBoolVar(f"has_opened_{p.name}")
+        model.Add(has_opened <= opens_sum)
+        open_close_terms.append(has_opened)
+
+        closes_sum = sum(
+            assign[(p, day, slots_by_day[day][-1].start, station)]
+            for day in days
+            for station in stations
+        )
+        has_closed = model.NewBoolVar(f"has_closed_{p.name}")
+        model.Add(has_closed <= closes_sum)
+        open_close_terms.append(has_closed)
+
     # Preference bonus terms: 1 if the person opened/closed on their
     # requested day, 0 otherwise (reusing the same expressions as the
     # hard open/close constraints, just per-day instead of summed).
@@ -314,9 +375,12 @@ def solve_week_schedule(
     model.Minimize(
         FRAGMENTATION_WEIGHT * sum(fragmentation_terms)
         - PREFERENCE_WEIGHT * sum(preference_terms)
+        - OPEN_CLOSE_WEIGHT * sum(open_close_terms)
+        - FLEXIBLE_COVERAGE_WEIGHT * sum(flexible_coverage_terms)
     )
 
     solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 30.0
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):

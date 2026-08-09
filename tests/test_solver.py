@@ -75,7 +75,7 @@ def build_two_station_availabilities():
 def test_finds_a_valid_schedule():
     availabilities = build_single_station_availabilities()
     shifts = solve_day_schedule(
-        availabilities, Day.MONDAY, time(7, 30), time(8, 30), [Station.NORTH]
+        availabilities, Day.MONDAY, time(7, 30), time(8, 30), {Station.NORTH: 1}
     )
     assert shifts is not None
     assert len(shifts) > 0
@@ -84,7 +84,7 @@ def test_finds_a_valid_schedule():
 def test_nobody_scheduled_when_unavailable():
     availabilities = build_single_station_availabilities()
     shifts = solve_day_schedule(
-        availabilities, Day.MONDAY, time(7, 30), time(8, 30), [Station.NORTH]
+        availabilities, Day.MONDAY, time(7, 30), time(8, 30), {Station.NORTH: 1}
     )
 
     for shift in shifts:
@@ -99,7 +99,7 @@ def test_nobody_scheduled_when_unavailable():
 def test_every_slot_is_covered():
     availabilities = build_single_station_availabilities()
     shifts = solve_day_schedule(
-        availabilities, Day.MONDAY, time(7, 30), time(8, 30), [Station.NORTH]
+        availabilities, Day.MONDAY, time(7, 30), time(8, 30), {Station.NORTH: 1}
     )
 
     total_minutes = sum(
@@ -115,7 +115,7 @@ def test_returns_none_when_impossible():
         _avail(ALEX, day, time(7, 30), time(7, 45), False),
     ]
     shifts = solve_day_schedule(
-        availabilities, day, time(7, 30), time(7, 45), [Station.NORTH]
+        availabilities, day, time(7, 30), time(7, 45), {Station.NORTH: 1}
     )
     assert shifts is None
 
@@ -127,7 +127,7 @@ def test_two_stations_covered_simultaneously():
         Day.MONDAY,
         time(7, 30),
         time(8, 0),
-        [Station.NORTH, Station.SOUTH],
+        {Station.NORTH: 1, Station.SOUTH: 1},
     )
     assert shifts is not None
 
@@ -149,7 +149,7 @@ def test_nobody_double_booked_across_stations():
         Day.MONDAY,
         time(7, 30),
         time(8, 0),
-        [Station.NORTH, Station.SOUTH],
+        {Station.NORTH: 1, Station.SOUTH: 1},
     )
     assert shifts is not None
 
@@ -160,3 +160,28 @@ def test_nobody_double_booked_across_stations():
         )
         for a, b in zip(person_shifts, person_shifts[1:]):
             assert a.end <= b.start
+
+
+def test_station_needing_two_people_at_once():
+    """
+    4 people, all fully available for one 15-min slot. North needs 2
+    people simultaneously (matches the real Welcome Desk setup where
+    North and South each run 2 concurrent positions). The solver should
+    assign exactly 2 different people to North for that slot.
+    """
+    day = Day.MONDAY
+    availabilities = [
+        _avail(ALEX, day, time(7, 30), time(7, 45), True),
+        _avail(ABBY, day, time(7, 30), time(7, 45), True),
+        _avail(DALTON, day, time(7, 30), time(7, 45), True),
+        _avail(CHARLOTTE, day, time(7, 30), time(7, 45), True),
+    ]
+
+    shifts = solve_day_schedule(
+        availabilities, day, time(7, 30), time(7, 45), {Station.NORTH: 2}
+    )
+
+    assert shifts is not None
+    north_shifts = [s for s in shifts if s.station == Station.NORTH]
+    assert len(north_shifts) == 2
+    assert north_shifts[0].person != north_shifts[1].person
