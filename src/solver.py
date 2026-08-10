@@ -151,6 +151,8 @@ def solve_week_schedule(
     close_preferences: Optional[dict] = None,
     flexible_stations: Optional[set] = None,
     min_shift_minutes: float = 90.0,
+    exact_half_or_full_days: Optional[set] = None,
+
 ) -> Optional[list[Shift]]:
     """
     Steps 5/6/7: solves across an entire week at once (not one day in
@@ -187,9 +189,17 @@ def solve_week_schedule(
         matching original behavior).
 
     min_shift_minutes: no contiguous shift on one station can be
-    shorter than this. HARD constraint -- if a block starts, it
-    must run at least this long, or it can't start there at all.
-    Defaults to 90 (minutes).
+        shorter than this. HARD constraint -- if a block starts, it
+        must run at least this long, or it can't start there at all.
+        Defaults to 90 (minutes). Ignored for days listed in
+        exact_half_or_full_days (see below).
+
+    exact_half_or_full_days: set of Days (e.g. {Day.FRIDAY}) where a
+        person's shift on any station must be EXACTLY the first half
+        of the day, EXACTLY the second half, or the ENTIRE day -- no
+        other length. Matches the real Welcome Desk rule that Friday
+        shifts are always 4.5 or 9 hours, nothing in between. Requires
+        that day's slot count be even (splits cleanly in half).
 
     Beyond honoring preferences, the solver also minimizes shift
     fragmentation by default (fewer, longer blocks per person per day
@@ -201,6 +211,7 @@ def solve_week_schedule(
     open_preferences = open_preferences or {}
     close_preferences = close_preferences or {}
     flexible_stations = flexible_stations or set()
+    exact_half_or_full_days = exact_half_or_full_days or set()
     stations = list(station_capacity.keys())
     people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
     days = list(day_operating_hours.keys())
@@ -255,14 +266,17 @@ def solve_week_schedule(
                     sum(assign[(p, day, s.start, station)] for station in stations) <= 1
                 )
 
-    # Hard constraint: no shift shorter than min_shift_minutes. Applied
+   # Hard constraint: no shift shorter than min_shift_minutes. Applied
     # per (person, day, station) -- a contiguous run on ONE station
     # can't start unless it can run the full minimum length, whether
     # that's blocked by the person's own availability ending or by the
-    # operating day ending too soon.
+    # operating day ending too soon. Skipped for exact_half_or_full_days
+    # -- those days get their own stricter rule below instead.
     min_shift_slots = round(min_shift_minutes / SLOT_MINUTES)
     for p in people:
         for day in days:
+            if day in exact_half_or_full_days:
+                continue
             slots = slots_by_day[day]
             for station in stations:
                 for i, s in enumerate(slots):
@@ -286,6 +300,30 @@ def solve_week_schedule(
                                 assign[(p, day, slots[i + offset].start, station)]
                                 >= block_start
                             )
+
+    # Hard constraint: on exact_half_or_full_days (e.g. Friday), a
+    # person's shift on a given station must be EXACTLY the first half
+    # of the day, EXACTLY the second half, or the WHOLE day. Modeled by
+    # forcing every slot within each half to share one boolean value --
+    # that alone only allows those three patterns (both-off, AM-only,
+    # PM-only, or both-on) and rules out any partial/arbitrary block.
+    for day in exact_half_or_full_days:
+        if day not in slots_by_day:
+            continue
+        slots = slots_by_day[day]
+        midpoint = len(slots) // 2
+        am_slots = slots[:midpoint]
+        pm_slots = slots[midpoint:]
+
+        for p in people:
+            for station in stations:
+                works_am = model.NewBoolVar(f"works_am_{p.name}_{day.name}_{station.name}")
+                works_pm = model.NewBoolVar(f"works_pm_{p.name}_{day.name}_{station.name}")
+
+                for s in am_slots:
+                    model.Add(assign[(p, day, s.start, station)] == works_am)
+                for s in pm_slots:
+                    model.Add(assign[(p, day, s.start, station)] == works_pm)
 
     # Hard constraint: min/max total hours per person across the whole week
     min_slot_count = round(min_hours * (60 / SLOT_MINUTES))
@@ -322,7 +360,29 @@ def solve_week_schedule(
     PREFERENCE_WEIGHT = 20  # heavily favor honoring requests over tidiness
     OPEN_CLOSE_WEIGHT = 15  # strongly prefer everyone opening/closing at least once, but not at the cost of feasibility
     FLEXIBLE_COVERAGE_WEIGHT = 8  # prefer fully staffing flexible stations (e.g. Dean's Suite) when it doesn't cost anything else
+    CONTINUITY_WEIGHT = 3  # prefer keeping the same person on a station rather than handing off to someone else who's also available
 
+    # Soft preference: minimize station "handoffs" -- a new person
+    # taking over a station that someone else was just covering, when
+    # that someone else was still available and could have kept going.
+    # This is what stops a person's block from getting cut short (e.g.
+    # cut off at 10:00 despite being available until 12:30) just to
+    # swap in a different available person for no real reason.
+    continuity_terms = []
+    for day in days:
+        slots = slots_by_day[day]
+        for station in stations:
+            for i in range(1, len(slots)):
+                for p in people:
+                    entered = model.NewBoolVar(
+                        f"entered_{p.name}_{day.name}_{slots[i].start}_{station.name}"
+                    )
+                    model.Add(
+                        entered
+                        >= assign[(p, day, slots[i].start, station)]
+                        - assign[(p, day, slots[i - 1].start, station)]
+                    )
+                    continuity_terms.append(entered)
     # Soft preference: fill flexible stations (e.g. Dean's Suite) up to
     # their listed capacity whenever it doesn't conflict with anything
     # else. This is what stops the solver from just always leaving them
@@ -415,6 +475,7 @@ def solve_week_schedule(
         - PREFERENCE_WEIGHT * sum(preference_terms)
         - OPEN_CLOSE_WEIGHT * sum(open_close_terms)
         - FLEXIBLE_COVERAGE_WEIGHT * sum(flexible_coverage_terms)
+        + CONTINUITY_WEIGHT * sum(continuity_terms)
     )
 
     solver = cp_model.CpSolver()

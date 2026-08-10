@@ -51,6 +51,7 @@ FLEXIBLE_STATIONS = {Station.DEANS_SUITE}
 ROTATION_STATIONS = [Station.NORTH, Station.SOUTH]
 MIN_HOURS = 9.0
 MAX_HOURS = 13.0
+EXACT_HALF_OR_FULL_DAYS = {Day.FRIDAY}
 
 OUTPUT_PATH = "data/generated_schedule.csv"
 
@@ -71,7 +72,8 @@ def main():
         min_hours=MIN_HOURS,
         max_hours=MAX_HOURS,
         rotation_stations=ROTATION_STATIONS,
-        flexible_stations=FLEXIBLE_STATIONS
+        flexible_stations=FLEXIBLE_STATIONS,
+        exact_half_or_full_days=EXACT_HALF_OR_FULL_DAYS
     )
 
     if shifts is None:

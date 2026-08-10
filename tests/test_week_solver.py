@@ -374,3 +374,94 @@ def test_min_shift_length_can_be_disabled():
         min_hours=0.25, max_hours=0.25, min_shift_minutes=0,
     )
     assert shifts is not None
+
+def build_friday_availabilities():
+    """
+    A mini 'Friday' (2 hours, 8 slots of 15 min -- scaled down from the
+    real 9-hour Friday for a fast test, but the same halves logic
+    applies). 2 people, both fully available the whole time.
+    """
+    day = Day.FRIDAY
+    data = []
+    h, m = 8, 0
+    for _ in range(8):
+        start = time(h, m)
+        m += 15
+        if m >= 60:
+            m -= 60
+            h += 1
+        end = time(h, m)
+        data.append(_avail(ALEX, day, start, end, True))
+        data.append(_avail(BOB, day, start, end, True))
+    return data
+
+
+def test_friday_shifts_are_exactly_half_or_full_day():
+    """
+    Mini 2-hour Friday, single station, 2 people fully available. Valid
+    per-person patterns on that station are ONLY: not working, exactly
+    the first hour (half), exactly the second hour (half), or the full
+    2 hours -- nothing in between (e.g. 45 min or 1.5 hours).
+    """
+    availabilities = build_friday_availabilities()
+    day_hours = {Day.FRIDAY: (time(8, 0), time(10, 0))}
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=2.0,
+        exact_half_or_full_days={Day.FRIDAY},
+    )
+
+    assert shifts is not None
+    for shift in shifts:
+        assert shift.duration_hours() in (1.0, 2.0)
+
+
+def test_non_exact_days_unaffected_by_friday_rule():
+    # Monday isn't in exact_half_or_full_days -- normal min-length rule
+    # (90 min default) should still be the only length constraint.
+    availabilities = build_two_day_availabilities()
+    day_hours = {
+        Day.MONDAY: (time(7, 30), time(8, 0)),
+        Day.TUESDAY: (time(7, 30), time(8, 0)),
+    }
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0.5, max_hours=1.0, min_shift_minutes=0,
+        exact_half_or_full_days={Day.FRIDAY},  # Friday isn't even in this dataset
+    )
+    assert shifts is not None
+
+
+def test_continuity_prefers_keeping_same_person_over_handoff():
+    """
+    3-hour single-station day (12 slots), 2 people BOTH available the
+    entire time. With no other constraint favoring a split, the solver
+    should keep ONE person on the station the whole time rather than
+    handing off to the other partway through for no reason -- exactly
+    the "Grace cut off early, Alex takes over" problem this fixes.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(10, 30))}
+    availabilities = []
+    h, m = 7, 30
+    for _ in range(12):
+        start = time(h, m)
+        m += 15
+        if m >= 60:
+            m -= 60
+            h += 1
+        end = time(h, m)
+        availabilities.append(_avail(ALEX, Day.MONDAY, start, end, True))
+        availabilities.append(_avail(BOB, Day.MONDAY, start, end, True))
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=3.0, min_shift_minutes=0,
+    )
+
+    assert shifts is not None
+    # Only one shift should exist for this single station/day -- one
+    # person covering the whole thing, not two people splitting it
+    north_shifts = [s for s in shifts if s.station == Station.NORTH]
+    assert len(north_shifts) == 1
+    assert north_shifts[0].duration_hours() == 3.0
