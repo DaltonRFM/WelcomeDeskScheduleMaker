@@ -152,7 +152,7 @@ def solve_week_schedule(
     flexible_stations: Optional[set] = None,
     min_shift_minutes: float = 90.0,
     exact_half_or_full_days: Optional[set] = None,
-
+    pinned_shift_blocks: Optional[dict] = None,
 ) -> Optional[list[Shift]]:
     """
     Steps 5/6/7: solves across an entire week at once (not one day in
@@ -201,6 +201,13 @@ def solve_week_schedule(
         shifts are always 4.5 or 9 hours, nothing in between. Requires
         that day's slot count be even (splits cleanly in half).
 
+    pinned_shift_blocks: dict mapping Person -> {Day: "AM" | "PM" | "FULL"}
+        HARD-requires that person to work at least that block pattern on
+        that day (only meaningful for days in exact_half_or_full_days).
+        Useful for locking in known new-hire Friday coverage ahead of
+        time, e.g. {sam: {Day.FRIDAY: "AM"}}. The solver still picks
+        which station -- this only pins the day/block, not the desk.
+
     Beyond honoring preferences, the solver also minimizes shift
     fragmentation by default (fewer, longer blocks per person per day
     rather than lots of short ones), since nobody asked for that but
@@ -212,6 +219,7 @@ def solve_week_schedule(
     close_preferences = close_preferences or {}
     flexible_stations = flexible_stations or set()
     exact_half_or_full_days = exact_half_or_full_days or set()
+    pinned_shift_blocks = pinned_shift_blocks or {}
     stations = list(station_capacity.keys())
     people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
     days = list(day_operating_hours.keys())
@@ -307,6 +315,8 @@ def solve_week_schedule(
     # forcing every slot within each half to share one boolean value --
     # that alone only allows those three patterns (both-off, AM-only,
     # PM-only, or both-on) and rules out any partial/arbitrary block.
+    works_am_by = {}  # (person, day, station) -> BoolVar
+    works_pm_by = {}
     for day in exact_half_or_full_days:
         if day not in slots_by_day:
             continue
@@ -319,11 +329,30 @@ def solve_week_schedule(
             for station in stations:
                 works_am = model.NewBoolVar(f"works_am_{p.name}_{day.name}_{station.name}")
                 works_pm = model.NewBoolVar(f"works_pm_{p.name}_{day.name}_{station.name}")
+                works_am_by[(p, day, station)] = works_am
+                works_pm_by[(p, day, station)] = works_pm
 
                 for s in am_slots:
                     model.Add(assign[(p, day, s.start, station)] == works_am)
                 for s in pm_slots:
                     model.Add(assign[(p, day, s.start, station)] == works_pm)
+
+    # Hard constraint: pinned_shift_blocks locks specific people into a
+    # specific AM/PM/FULL pattern on a specific exact_half_or_full_day
+    # (e.g. a known new hire always covering Friday mornings). The
+    # solver still picks which station -- this only pins the pattern.
+    for person, day_blocks in pinned_shift_blocks.items():
+        for day, block in day_blocks.items():
+            if day not in exact_half_or_full_days or day not in slots_by_day:
+                continue
+            if block in ("AM", "FULL"):
+                model.Add(
+                    sum(works_am_by[(person, day, station)] for station in stations) >= 1
+                )
+            if block in ("PM", "FULL"):
+                model.Add(
+                    sum(works_pm_by[(person, day, station)] for station in stations) >= 1
+                )
 
     # Hard constraint: min/max total hours per person across the whole week
     min_slot_count = round(min_hours * (60 / SLOT_MINUTES))
@@ -361,6 +390,26 @@ def solve_week_schedule(
     OPEN_CLOSE_WEIGHT = 15  # strongly prefer everyone opening/closing at least once, but not at the cost of feasibility
     FLEXIBLE_COVERAGE_WEIGHT = 8  # prefer fully staffing flexible stations (e.g. Dean's Suite) when it doesn't cost anything else
     CONTINUITY_WEIGHT = 3  # prefer keeping the same person on a station rather than handing off to someone else who's also available
+    SAME_DAY_SWITCH_WEIGHT = 12  # prefer satisfying rotation (North AND South) across DIFFERENT days rather than switching desks within one day
+
+    # Soft preference: minimize a person working more than one DISTINCT
+    # station on the same day. The rotation requirement above only cares
+    # that North and South both get worked SOMETIME during the week --
+    # without this, the solver is free to satisfy it by cramming both
+    # into one day (sometimes back-to-back, looking like a mid-shift
+    # desk change). This nudges it toward spreading rotation across
+    # different days whenever a person's availability allows it.
+    same_day_switch_terms = []
+    for p in people:
+        for day in days:
+            slots = slots_by_day[day]
+            for station in stations:
+                works_station_today = model.NewBoolVar(
+                    f"works_today_{p.name}_{day.name}_{station.name}"
+                )
+                daily_total = sum(assign[(p, day, s.start, station)] for s in slots)
+                model.Add(works_station_today <= daily_total)
+                same_day_switch_terms.append(works_station_today)
 
     # Soft preference: minimize station "handoffs" -- a new person
     # taking over a station that someone else was just covering, when
@@ -476,6 +525,7 @@ def solve_week_schedule(
         - OPEN_CLOSE_WEIGHT * sum(open_close_terms)
         - FLEXIBLE_COVERAGE_WEIGHT * sum(flexible_coverage_terms)
         + CONTINUITY_WEIGHT * sum(continuity_terms)
+        + SAME_DAY_SWITCH_WEIGHT * sum(same_day_switch_terms)
     )
 
     solver = cp_model.CpSolver()

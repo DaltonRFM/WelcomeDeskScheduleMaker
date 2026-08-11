@@ -465,3 +465,91 @@ def test_continuity_prefers_keeping_same_person_over_handoff():
     north_shifts = [s for s in shifts if s.station == Station.NORTH]
     assert len(north_shifts) == 1
     assert north_shifts[0].duration_hours() == 3.0
+
+def test_rotation_prefers_different_days_over_same_day_switch():
+    """
+    2 people, both available Monday AND Tuesday, both stations, both
+    days. Rotation requires each person work North AND South at some
+    point. With multiple days open and nothing forcing a same-day
+    switch, the solver should satisfy rotation using DIFFERENT days per
+    person rather than cramming both stations into one day -- exactly
+    the Laila-style same-day desk switch this fixes.
+    """
+    day_hours = {
+        Day.MONDAY: (time(7, 30), time(9, 0)),
+        Day.TUESDAY: (time(7, 30), time(9, 0)),
+    }
+    availabilities = []
+    for day in (Day.MONDAY, Day.TUESDAY):
+        h, m = 7, 30
+        for _ in range(6):
+            start = time(h, m)
+            m += 15
+            if m >= 60:
+                m -= 60
+                h += 1
+            end = time(h, m)
+            availabilities.append(_avail(ALEX, day, start, end, True))
+            availabilities.append(_avail(BOB, day, start, end, True))
+
+    shifts = solve_week_schedule(
+        availabilities,
+        day_hours,
+        {Station.NORTH: 1, Station.SOUTH: 1},
+        min_hours=0,
+        max_hours=3.0,
+        min_shift_minutes=0,
+        rotation_stations=[Station.NORTH, Station.SOUTH],
+    )
+
+    assert shifts is not None
+    for person in (ALEX, BOB):
+        stations_by_day = {}
+        for s in shifts:
+            if s.person == person:
+                stations_by_day.setdefault(s.day, set()).add(s.station)
+        # Nobody should work 2 distinct stations on the SAME day
+        for day, stations_worked in stations_by_day.items():
+            assert len(stations_worked) == 1
+
+
+def test_pinned_friday_block_is_honored():
+    """
+    A "new hire" (Alex) is pinned to work the AM half of Friday.
+    Regardless of what else the solver would otherwise choose, Alex
+    must end up covering some station for the first half of Friday.
+    """
+    availabilities = build_friday_availabilities()  # Alex + Bob, both fully available
+    day_hours = {Day.FRIDAY: (time(8, 0), time(10, 0))}
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=2.0,
+        exact_half_or_full_days={Day.FRIDAY},
+        pinned_shift_blocks={ALEX: {Day.FRIDAY: "AM"}},
+    )
+
+    assert shifts is not None
+    alex_am_shift = [
+        s for s in shifts
+        if s.person == ALEX and s.start == time(8, 0) and s.duration_hours() >= 1.0
+    ]
+    assert len(alex_am_shift) == 1
+
+
+def test_pinned_friday_full_day_is_honored():
+    availabilities = build_friday_availabilities()
+    day_hours = {Day.FRIDAY: (time(8, 0), time(10, 0))}
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=2.0,
+        exact_half_or_full_days={Day.FRIDAY},
+        pinned_shift_blocks={ALEX: {Day.FRIDAY: "FULL"}},
+    )
+
+    assert shifts is not None
+    alex_shifts = [s for s in shifts if s.person == ALEX]
+    assert len(alex_shifts) == 1
+    assert alex_shifts[0].start == time(8, 0)
+    assert alex_shifts[0].end == time(10, 0)

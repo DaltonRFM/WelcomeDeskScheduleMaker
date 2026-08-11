@@ -17,7 +17,7 @@ Usage:
 from datetime import time
 
 from src.availability_parser import parse_availability_csv
-from src.models import Day, Station
+from src.models import Day, Person, Station
 from src.output_writer import write_schedule_csv
 from src.solver import solve_week_schedule
 
@@ -53,6 +53,28 @@ MIN_HOURS = 9.0
 MAX_HOURS = 13.0
 EXACT_HALF_OR_FULL_DAYS = {Day.FRIDAY}
 
+# Lock specific people into specific Friday blocks -- e.g. new hires who
+# always cover a known Friday shift. Values are "AM" (first half),
+# "PM" (second half), or "FULL" (whole day). Add entries here as needed;
+# leave empty ({}) if nobody needs to be pinned this semester.
+#
+# Example:
+#     from src.models import Person
+#     PINNED_SHIFT_BLOCKS = {
+#         Person(name="Sam"): {Day.FRIDAY: "AM"},
+#         Person(name="Jordan"): {Day.FRIDAY: "FULL"},
+#     }
+PINNED_SHIFT_BLOCKS = {
+    Person(name='Caroline S'): {Day.FRIDAY: 'AM'},
+    Person(name='Charlie'): {Day.FRIDAY: 'FULL'},
+    Person(name='Mia'): {Day.FRIDAY: 'AM'},
+    Person(name='Abby'): {Day.FRIDAY: 'AM'},
+    Person(name='Keira'): {Day.FRIDAY: 'PM'},
+    Person(name='Naisha'): {Day.FRIDAY: 'PM'},
+    Person(name='Alex'): {Day.FRIDAY: 'PM'},
+    Person(name='Reese'): {Day.FRIDAY: 'PM'}
+}
+
 OUTPUT_PATH = "data/generated_schedule.csv"
 
 
@@ -73,7 +95,8 @@ def main():
         max_hours=MAX_HOURS,
         rotation_stations=ROTATION_STATIONS,
         flexible_stations=FLEXIBLE_STATIONS,
-        exact_half_or_full_days=EXACT_HALF_OR_FULL_DAYS
+        exact_half_or_full_days=EXACT_HALF_OR_FULL_DAYS,
+        pinned_shift_blocks=PINNED_SHIFT_BLOCKS
     )
 
     if shifts is None:
