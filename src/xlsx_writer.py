@@ -186,34 +186,18 @@ def write_schedule_xlsx(
 
 
 if __name__ == "__main__":
-    from src.availability_parser import parse_availability_csv
-    from src.main import (
-        CSV_FILES, DAY_OPERATING_HOURS, STATION_CAPACITY, MIN_HOURS,
-        MAX_HOURS, ROTATION_STATIONS, FLEXIBLE_STATIONS, EXACT_HALF_OR_FULL_DAYS,
-    )
-    from src.solver import solve_week_schedule
+    from src.main import DAY_OPERATING_HOURS, STATION_CAPACITY, CSV_FILES
+    from src.output_writer import read_schedule_csv
 
-    all_availabilities = []
-    for day, filepath in CSV_FILES.items():
-        all_availabilities.extend(parse_availability_csv(filepath, day))
-
+    schedule_csv_path = "data/generated_schedule.csv"
     active_day_hours = {
         day: hours for day, hours in DAY_OPERATING_HOURS.items() if day in CSV_FILES
     }
 
-    shifts = solve_week_schedule(
-        availabilities=all_availabilities,
-        day_operating_hours=active_day_hours,
-        station_capacity=STATION_CAPACITY,
-        min_hours=MIN_HOURS,
-        max_hours=MAX_HOURS,
-        rotation_stations=ROTATION_STATIONS,
-        flexible_stations=FLEXIBLE_STATIONS,
-        exact_half_or_full_days=EXACT_HALF_OR_FULL_DAYS,
-    )
-
-    if shifts is None:
-        print("No valid schedule found -- can't generate xlsx.")
+    try:
+        shifts = read_schedule_csv(schedule_csv_path)
+    except FileNotFoundError:
+        print(f"{schedule_csv_path} not found -- run `python -m src.main` first to generate it.")
     else:
         output_path = "data/generated_schedule.xlsx"
         write_schedule_xlsx(shifts, active_day_hours, STATION_CAPACITY, output_path)
