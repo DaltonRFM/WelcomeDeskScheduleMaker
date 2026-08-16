@@ -10,8 +10,9 @@ auth setup is its own chunk of work). For now, you export each day's
 "_YN" tab as a CSV into data/, named to match CSV_FILES below, and run
 this script.
 
-Usage:
+Fully run the program to generate a new excel spreadsheet using these two commands:
     python -m src.main
+    python -m src.xlsx_writer
 """
 
 from datetime import time
@@ -33,7 +34,7 @@ CSV_FILES = {
     Day.FRIDAY: "data/friday_availability.csv",
 }
 
-# Business rules from docs/PLANNING.md
+# Hours are from 7:30am to 5pm
 DAY_OPERATING_HOURS = {
     Day.MONDAY: (time(7, 30), time(17, 0)),
     Day.TUESDAY: (time(7, 30), time(17, 0)),
@@ -49,7 +50,7 @@ STATION_CAPACITY = {
 }
 FLEXIBLE_STATIONS = {Station.DEANS_SUITE}
 ROTATION_STATIONS = [Station.NORTH, Station.SOUTH]
-MIN_HOURS = 9.0
+MIN_HOURS = 10.0
 MAX_HOURS = 13.0
 EXACT_HALF_OR_FULL_DAYS = {Day.FRIDAY}
 
@@ -58,15 +59,10 @@ EXACT_HALF_OR_FULL_DAYS = {Day.FRIDAY}
 # "PM" (second half), or "FULL" (whole day). Add entries here as needed;
 # leave empty ({}) if nobody needs to be pinned this semester.
 #
-# Example:
-#     from src.models import Person
-#     PINNED_SHIFT_BLOCKS = {
-#         Person(name="Sam"): {Day.FRIDAY: "AM"},
-#         Person(name="Jordan"): {Day.FRIDAY: "FULL"},
-#     }
 PINNED_SHIFT_BLOCKS = {
     Person(name='Caroline S'): {Day.FRIDAY: 'AM'},
     Person(name='Charlie'): {Day.FRIDAY: 'FULL'},
+    Person(name='Olivia D'): {Day.FRIDAY: 'AM'},
     Person(name='Mia'): {Day.FRIDAY: 'AM'},
     Person(name='Abby'): {Day.FRIDAY: 'AM'},
     Person(name='Keira'): {Day.FRIDAY: 'PM'},

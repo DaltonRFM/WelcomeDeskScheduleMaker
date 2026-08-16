@@ -10,8 +10,8 @@ with Sheets (File > Import > Upload in Sheets also works).
 
 Usage (standalone):
     python -m src.xlsx_writer
-(reads the same CSV_FILES config as main.py, solves, and writes an xlsx
-instead of/alongside the plain CSV)
+(reads the already-generated data/generated_schedule.csv and renders it
+-- run `python -m src.main` first to produce that CSV)
 """
 
 from datetime import datetime, time, timedelta
@@ -88,9 +88,11 @@ def write_schedule_xlsx(
     station_capacity: dict,
     filepath: str,
     station_order: list = None,
+    rotation_stations: list = None,
 ) -> None:
     station_order = station_order or list(station_capacity.keys())
     days_in_order = [d for d in day_operating_hours.keys()]
+    rotation_stations = rotation_stations or []
 
     row_axis = _build_row_axis(day_operating_hours)
     row_index = {t: i for i, t in enumerate(row_axis)}
@@ -177,6 +179,61 @@ def write_schedule_xlsx(
                 cell.font = Font(color="FFFFFF", bold=True, size=9)
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+    # --- Summary section, below the main grid ---
+    # Matches the original hand-built sheet: one row per person, hours
+    # worked per day + weekly total, then checkmarks for opening,
+    # closing, and each rotation station worked at least once.
+    summary_start_row = DATA_START_ROW + len(row_axis) + 2
+
+    CHECK = "\u2705"  # green checkmark, matches the original sheet's style
+    CROSS = "x"
+
+    summary_headers = ["Name"] + [d.value for d in days_in_order] + ["Total", "Opening", "Closing"] + [s.value for s in rotation_stations]
+    for i, header in enumerate(summary_headers):
+        cell = ws.cell(row=summary_start_row, column=1 + i, value=header)
+        cell.font = Font(bold=True)
+
+    for row_offset, person in enumerate(people):
+        row = summary_start_row + 1 + row_offset
+        person_shifts = [s for s in shifts if s.person == person]
+
+        # Name (colored to match their blocks above, like the original)
+        name_cell = ws.cell(row=row, column=1, value=person.name)
+        name_cell.fill = PatternFill(
+            start_color=person_color[person], end_color=person_color[person], fill_type="solid"
+        )
+        name_cell.font = Font(color="FFFFFF", bold=True)
+
+        total_hours = 0.0
+        for day_offset, day in enumerate(days_in_order):
+            day_hours = sum(s.duration_hours() for s in person_shifts if s.day == day)
+            total_hours += day_hours
+            if day_hours > 0:
+                ws.cell(row=row, column=2 + day_offset, value=day_hours)
+
+        total_col = 2 + len(days_in_order)
+        ws.cell(row=row, column=total_col, value=total_hours).font = Font(bold=True)
+
+        # Opening / closing: did they work the FIRST/LAST slot of ANY day
+        opened = any(
+            s.day in day_operating_hours and s.start == day_operating_hours[s.day][0]
+            for s in person_shifts
+        )
+        closed = any(
+            s.day in day_operating_hours and s.end == day_operating_hours[s.day][1]
+            for s in person_shifts
+        )
+        ws.cell(row=row, column=total_col + 1, value=CHECK if opened else CROSS)
+        ws.cell(row=row, column=total_col + 2, value=CHECK if closed else CROSS)
+
+        # One column per rotation station: did they work it at least once
+        for station_offset, station in enumerate(rotation_stations):
+            worked = any(s.station == station for s in person_shifts)
+            ws.cell(
+                row=row, column=total_col + 3 + station_offset,
+                value=CHECK if worked else CROSS,
+            )
+
     # Reasonable column widths
     ws.column_dimensions["A"].width = 10
     for c in range(2, col):
@@ -186,7 +243,7 @@ def write_schedule_xlsx(
 
 
 if __name__ == "__main__":
-    from src.main import DAY_OPERATING_HOURS, STATION_CAPACITY, CSV_FILES
+    from src.main import DAY_OPERATING_HOURS, STATION_CAPACITY, CSV_FILES, ROTATION_STATIONS
     from src.output_writer import read_schedule_csv
 
     schedule_csv_path = "data/generated_schedule.csv"
@@ -200,5 +257,8 @@ if __name__ == "__main__":
         print(f"{schedule_csv_path} not found -- run `python -m src.main` first to generate it.")
     else:
         output_path = "data/generated_schedule.xlsx"
-        write_schedule_xlsx(shifts, active_day_hours, STATION_CAPACITY, output_path)
+        write_schedule_xlsx(
+            shifts, active_day_hours, STATION_CAPACITY, output_path,
+            rotation_stations=ROTATION_STATIONS,
+        )
         print(f"Colored schedule written to {output_path}")
