@@ -153,6 +153,7 @@ def solve_week_schedule(
     min_shift_minutes: float = 90.0,
     exact_half_or_full_days: Optional[set] = None,
     pinned_shift_blocks: Optional[dict] = None,
+    shift_requests: Optional[dict] = None,
 ) -> Optional[list[Shift]]:
     """
     Steps 5/6/7: solves across an entire week at once (not one day in
@@ -208,6 +209,15 @@ def solve_week_schedule(
         time, e.g. {sam: {Day.FRIDAY: "AM"}}. The solver still picks
         which station -- this only pins the day/block, not the desk.
 
+    shift_requests: dict mapping Person -> list of (Day, start, end)
+        tuples, e.g. {ivanna: [(Day.MONDAY, time(7,30), time(12,30))]}.
+        SOFT -- the solver tries hard to cover the requested window,
+        but never at the cost of a hard constraint, and never blocks
+        the whole schedule from solving even if a request can't be
+        (fully) honored. Use check_request_fulfillment() in
+        diagnostics.py after solving to see how well each request was
+        actually met.
+
     Beyond honoring preferences, the solver also minimizes shift
     fragmentation by default (fewer, longer blocks per person per day
     rather than lots of short ones), since nobody asked for that but
@@ -223,6 +233,7 @@ def solve_week_schedule(
     stations = list(station_capacity.keys())
     people = sorted({a.person for a in availabilities}, key=lambda p: p.name)
     days = list(day_operating_hours.keys())
+    shift_requests = shift_requests or {}
 
     # Build slots per day, and an availability lookup keyed by (person, day, slot_start)
     slots_by_day = {
@@ -391,7 +402,26 @@ def solve_week_schedule(
     FLEXIBLE_COVERAGE_WEIGHT = 8  # prefer fully staffing flexible stations (e.g. Dean's Suite) when it doesn't cost anything else
     CONTINUITY_WEIGHT = 3  # prefer keeping the same person on a station rather than handing off to someone else who's also available
     SAME_DAY_SWITCH_WEIGHT = 12  # prefer satisfying rotation (North AND South) across DIFFERENT days rather than switching desks within one day
+    SHIFT_REQUEST_WEIGHT = 25  # strongly prefer honoring explicit shift requests (e.g. "I want 7:30-12:30 Monday"), highest of the soft preferences
 
+    # Soft preference: cover as much of each requested (Day, start, end)
+    # window as possible for that person. Never a hard requirement --
+    # if a request conflicts with availability or another hard
+    # constraint, the solver just does its best and the schedule still
+    # solves. Use check_request_fulfillment() afterward to see exactly
+    # how well each request was actually honored.
+    shift_request_terms = []
+    for person, requests in shift_requests.items():
+        for day, req_start, req_end in requests:
+            if day not in slots_by_day:
+                continue
+            matching_slots = [
+                s for s in slots_by_day[day] if req_start <= s.start < req_end
+            ]
+            for s in matching_slots:
+                shift_request_terms.append(
+                    sum(assign[(person, day, s.start, station)] for station in stations)
+                )
     # Soft preference: minimize a person working more than one DISTINCT
     # station on the same day. The rotation requirement above only cares
     # that North and South both get worked SOMETIME during the week --
@@ -526,6 +556,7 @@ def solve_week_schedule(
         - FLEXIBLE_COVERAGE_WEIGHT * sum(flexible_coverage_terms)
         + CONTINUITY_WEIGHT * sum(continuity_terms)
         + SAME_DAY_SWITCH_WEIGHT * sum(same_day_switch_terms)
+        - SHIFT_REQUEST_WEIGHT * sum(shift_request_terms)
     )
 
     solver = cp_model.CpSolver()

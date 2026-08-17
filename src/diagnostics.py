@@ -110,6 +110,75 @@ def check_per_person_availability(availabilities, day_operating_hours, min_hours
 
     return shortfalls
 
+def check_request_fulfillment(shifts, shift_requests):
+    """
+    After solving, checks how much of each requested (Day, start, end)
+    window was actually covered by that person's assigned shifts.
+    Requests are soft (see solve_week_schedule's shift_requests param),
+    so this is how you find out which ones didn't get (fully) honored
+    instead of the solver silently ignoring them.
+
+    Returns a list of dicts, one per request:
+        {person, day, requested_start, requested_end,
+         requested_hours, fulfilled_hours, pct_fulfilled}
+    """
+    from datetime import datetime
+
+    results = []
+    for person, requests in shift_requests.items():
+        person_shifts = [s for s in shifts if s.person == person]
+
+        for day, req_start, req_end in requests:
+            requested_minutes = (
+                datetime(2000, 1, 1, req_end.hour, req_end.minute)
+                - datetime(2000, 1, 1, req_start.hour, req_start.minute)
+            ).seconds / 60
+
+            fulfilled_minutes = 0
+            for s in person_shifts:
+                if s.day != day:
+                    continue
+                overlap_start = max(s.start, req_start)
+                overlap_end = min(s.end, req_end)
+                if overlap_end > overlap_start:
+                    fulfilled_minutes += (
+                        datetime(2000, 1, 1, overlap_end.hour, overlap_end.minute)
+                        - datetime(2000, 1, 1, overlap_start.hour, overlap_start.minute)
+                    ).seconds / 60
+
+            pct = (fulfilled_minutes / requested_minutes * 100) if requested_minutes else 0
+            results.append({
+                "person": person,
+                "day": day,
+                "requested_start": req_start,
+                "requested_end": req_end,
+                "requested_hours": requested_minutes / 60,
+                "fulfilled_hours": fulfilled_minutes / 60,
+                "pct_fulfilled": pct,
+            })
+
+    return results
+
+
+def print_request_report(shifts, shift_requests):
+    if not shift_requests:
+        return
+
+    print()
+    print("=== Shift request fulfillment ===")
+    results = check_request_fulfillment(shifts, shift_requests)
+    for r in results:
+        status = "✅ fully honored" if r["pct_fulfilled"] >= 99.9 else (
+            "⚠ partially honored" if r["pct_fulfilled"] > 0 else "❌ NOT honored"
+        )
+        start_str = r["requested_start"].strftime("%I:%M %p").lstrip("0")
+        end_str = r["requested_end"].strftime("%I:%M %p").lstrip("0")
+        print(
+            f"  {r['person'].name} -- {r['day'].value} {start_str}-{end_str}: "
+            f"{status} ({r['fulfilled_hours']:.2f}/{r['requested_hours']:.2f} hours)"
+        )
+
+
 def print_report(availabilities, day_operating_hours, station_capacity, min_hours):
     print("=== Coverage gap check ===")
     gaps = check_coverage_gaps(availabilities, day_operating_hours, station_capacity)

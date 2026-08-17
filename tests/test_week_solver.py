@@ -553,3 +553,73 @@ def test_pinned_friday_full_day_is_honored():
     assert len(alex_shifts) == 1
     assert alex_shifts[0].start == time(8, 0)
     assert alex_shifts[0].end == time(10, 0)
+
+def test_shift_request_is_honored_when_feasible():
+    """
+    2 people, both fully available a 3-hour Monday. Alex requests
+    7:30-9:30 specifically. Nothing else pushes against it, so the
+    solver should actually schedule Alex during that exact window.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(10, 30))}
+    availabilities = []
+    h, m = 7, 30
+    for _ in range(12):
+        start = time(h, m)
+        m += 15
+        if m >= 60:
+            m -= 60
+            h += 1
+        end = time(h, m)
+        availabilities.append(_avail(ALEX, Day.MONDAY, start, end, True))
+        availabilities.append(_avail(BOB, Day.MONDAY, start, end, True))
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=3.0, min_shift_minutes=0,
+        shift_requests={ALEX: [(Day.MONDAY, time(7, 30), time(9, 30))]},
+    )
+
+    assert shifts is not None
+    alex_shifts = [s for s in shifts if s.person == ALEX]
+    covered_request = any(
+        s.day == Day.MONDAY and s.start <= time(7, 30) and s.end >= time(9, 30)
+        for s in alex_shifts
+    )
+    assert covered_request
+
+
+def test_shift_request_does_not_break_feasibility_when_impossible():
+    """
+    Alex requests a window she's NOT actually available for (per her
+    own availability data). Since requests are soft, the schedule
+    should still solve -- the request just won't be honored.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(9, 0))}
+    availabilities = [
+        _avail(ALEX, Day.MONDAY, time(7, 30), time(7, 45), False),
+        _avail(ALEX, Day.MONDAY, time(7, 45), time(8, 0), False),
+        _avail(ALEX, Day.MONDAY, time(8, 0), time(8, 15), True),
+        _avail(ALEX, Day.MONDAY, time(8, 15), time(8, 30), True),
+        _avail(ALEX, Day.MONDAY, time(8, 30), time(8, 45), True),
+        _avail(ALEX, Day.MONDAY, time(8, 45), time(9, 0), True),
+        _avail(BOB, Day.MONDAY, time(7, 30), time(7, 45), True),
+        _avail(BOB, Day.MONDAY, time(7, 45), time(8, 0), True),
+        _avail(BOB, Day.MONDAY, time(8, 0), time(8, 15), True),
+        _avail(BOB, Day.MONDAY, time(8, 15), time(8, 30), True),
+        _avail(BOB, Day.MONDAY, time(8, 30), time(8, 45), True),
+        _avail(BOB, Day.MONDAY, time(8, 45), time(9, 0), True),
+    ]
+
+    # Alex requests 7:30-8:00, but she's unavailable then -- should
+    # still solve fine, just without honoring that specific request.
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=1.5, min_shift_minutes=0,
+        shift_requests={ALEX: [(Day.MONDAY, time(7, 30), time(8, 0))]},
+    )
+
+    assert shifts is not None
+    # Confirm the unavailable window really wasn't given to Alex
+    alex_shifts = [s for s in shifts if s.person == ALEX]
+    assert not any(s.start < time(8, 0) for s in alex_shifts)
+

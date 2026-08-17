@@ -65,3 +65,42 @@ def parse_availability_csv(filepath: str, day: Day) -> list[Availability]:
             )
 
     return availabilities
+
+def apply_blackouts(availabilities: list[Availability], blackouts: dict) -> list[Availability]:
+    """
+    Overrides raw availability with personal "I don't want to work X"
+    preferences -- treated as a HARD blackout, same weight as being in
+    class. Use this for things like "Laila doesn't want Mondays" that
+    should never be scheduled regardless of what the sheet says.
+
+    blackouts: dict mapping Person -> list of entries, where each entry
+    is either:
+      - a Day (blackout the ENTIRE day), e.g. Day.MONDAY
+      - a (Day, start_time, end_time) tuple (blackout just that window)
+
+    Returns a NEW list of Availability records -- doesn't mutate the
+    input. If a blackout makes the whole schedule infeasible, that'll
+    show up the same way any other availability shortfall does (see
+    diagnostics.py) -- this is a real hard constraint, not a soft ask.
+    """
+    result = []
+    for a in availabilities:
+        person_rules = blackouts.get(a.person, [])
+        blocked = False
+        for rule in person_rules:
+            if isinstance(rule, Day):
+                if a.slot.day == rule:
+                    blocked = True
+                    break
+            else:
+                day, start, end = rule
+                if a.slot.day == day and start <= a.slot.start < end:
+                    blocked = True
+                    break
+
+        if blocked and a.is_available:
+            result.append(Availability(person=a.person, slot=a.slot, is_available=False))
+        else:
+            result.append(a)
+
+    return result

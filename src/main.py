@@ -17,7 +17,7 @@ Fully run the program to generate a new excel spreadsheet using these two comman
 
 from datetime import time
 
-from src.availability_parser import parse_availability_csv
+from src.availability_parser import apply_blackouts, parse_availability_csv
 from src.models import Day, Person, Station
 from src.output_writer import write_schedule_csv
 from src.solver import solve_week_schedule
@@ -71,6 +71,45 @@ PINNED_SHIFT_BLOCKS = {
     Person(name='Reese'): {Day.FRIDAY: 'PM'}
 }
 
+# Individual shift requests -- e.g. "Dalton wants 7:30-12:30 Monday".
+# SOFT: the solver tries hard to honor these but will never let a
+# request break a hard rule or block the schedule from solving. After
+# solving, a report prints showing exactly how well each request was
+# honored (fully / partially / not at all) -- see diagnostics.py.
+#
+# Example:
+#     from src.models import Person
+#     SHIFT_REQUESTS = {
+#     Person(name="Dalton"): [(Day.MONDAY, time(7, 30), time(12, 30))],
+#     Person(name="Ivanna"): [ (This is how you do multiple requests for the same person)
+#         (Day.MONDAY, time(7, 30), time(12, 30)),
+#         (Day.TUESDAY, time(14, 0), time(17, 0)),
+#     ],
+# }
+# It's in military time for the hours! 
+
+SHIFT_REQUESTS = {
+    Person(name="Ivanna"): [
+        (Day.MONDAY, time(7, 30), time(12, 30)),
+        (Day.TUESDAY, time(14, 0), time(17, 0)),
+    ],
+
+}
+
+# Personal "I don't want to work X" preferences -- treated as a HARD
+# blackout (same weight as being in class), not a soft ask. Each
+# person's list can mix whole-day entries and partial-window entries.
+#
+# Example:
+#     from src.models import Person
+#     BLACKOUTS = {
+#         Person(name="Laila"): [Day.MONDAY],  # whole day off
+#         Person(name="Sam"): [(Day.TUESDAY, time(14, 0), time(17, 0))],  # just Tue afternoons
+#     }
+BLACKOUTS = {
+    Person(name="Laila"): [Day.MONDAY]
+}
+
 OUTPUT_PATH = "data/generated_schedule.csv"
 
 
@@ -78,6 +117,8 @@ def main():
     all_availabilities = []
     for day, filepath in CSV_FILES.items():
         all_availabilities.extend(parse_availability_csv(filepath, day))
+
+    all_availabilities = apply_blackouts(all_availabilities, BLACKOUTS)
 
     active_day_hours = {
         day: hours for day, hours in DAY_OPERATING_HOURS.items() if day in CSV_FILES
@@ -92,7 +133,8 @@ def main():
         rotation_stations=ROTATION_STATIONS,
         flexible_stations=FLEXIBLE_STATIONS,
         exact_half_or_full_days=EXACT_HALF_OR_FULL_DAYS,
-        pinned_shift_blocks=PINNED_SHIFT_BLOCKS
+        pinned_shift_blocks=PINNED_SHIFT_BLOCKS,
+        shift_requests=SHIFT_REQUESTS
     )
 
     if shifts is None:
@@ -102,6 +144,9 @@ def main():
 
     write_schedule_csv(shifts, OUTPUT_PATH)
     print(f"Schedule written to {OUTPUT_PATH} ({len(shifts)} shifts).")
+
+    from src.diagnostics import print_request_report
+    print_request_report(shifts, SHIFT_REQUESTS)
 
 
 if __name__ == "__main__":
