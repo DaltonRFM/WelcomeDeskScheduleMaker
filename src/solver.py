@@ -151,6 +151,7 @@ def solve_week_schedule(
     close_preferences: Optional[dict] = None,
     flexible_stations: Optional[set] = None,
     min_shift_minutes: float = 90.0,
+    max_shift_minutes: float = 510.0,
     exact_half_or_full_days: Optional[set] = None,
     pinned_shift_blocks: Optional[dict] = None,
     shift_requests: Optional[dict] = None,
@@ -194,6 +195,12 @@ def solve_week_schedule(
         must run at least this long, or it can't start there at all.
         Defaults to 90 (minutes). Ignored for days listed in
         exact_half_or_full_days (see below).
+
+    max_shift_minutes: no contiguous shift on one station can be
+        LONGER than this. HARD constraint. Defaults to 510 (8.5 hours).
+        Also ignored for exact_half_or_full_days -- those days are
+        already capped at a full day (e.g. 9 hours on Friday) by the
+        AM/PM/FULL rule instead.
 
     exact_half_or_full_days: set of Days (e.g. {Day.FRIDAY}) where a
         person's shift on any station must be EXACTLY the first half
@@ -319,6 +326,29 @@ def solve_week_schedule(
                                 assign[(p, day, slots[i + offset].start, station)]
                                 >= block_start
                             )
+        # Hard constraint: no shift longer than max_shift_minutes. Applied
+    # per (person, day, station) via a sliding window -- in ANY window
+    # of (max_shift_slots + 1) consecutive slots, at most max_shift_slots
+    # of them can be worked. That forces at least one break within any
+    # stretch longer than the max, capping continuous shift length
+    # without needing to track exact block boundaries. Skipped for
+    # exact_half_or_full_days -- those days are already capped by the
+    # AM/PM/FULL rule (e.g. a full Friday tops out at 9 hours).
+    max_shift_slots = round(max_shift_minutes / SLOT_MINUTES)
+    for p in people:
+        for day in days:
+            if day in exact_half_or_full_days:
+                continue
+            slots = slots_by_day[day]
+            for station in stations:
+                for start_idx in range(len(slots) - max_shift_slots):
+                    window = slots[start_idx:start_idx + max_shift_slots + 1]
+                    model.Add(
+                        sum(assign[(p, day, s.start, station)] for s in window)
+                        <= max_shift_slots
+                    )
+
+
 
     # Hard constraint: on exact_half_or_full_days (e.g. Friday), a
     # person's shift on a given station must be EXACTLY the first half

@@ -623,3 +623,65 @@ def test_shift_request_does_not_break_feasibility_when_impossible():
     alex_shifts = [s for s in shifts if s.person == ALEX]
     assert not any(s.start < time(8, 0) for s in alex_shifts)
 
+def test_max_shift_length_forces_a_break():
+    """
+    A full 10-hour single-station day, 2 people BOTH available the
+    entire time. Continuity preference alone would push toward one
+    person covering the whole thing in one block -- but with
+    max_shift_minutes=480 (8 hours), no single shift can exceed that,
+    so a break/handoff MUST happen somewhere.
+    """
+    day_hours = {Day.MONDAY: (time(7, 30), time(17, 30))}
+    availabilities = []
+    h, m = 7, 30
+    for _ in range(40):  # 10 hours of 15-min slots
+        start = time(h, m)
+        m += 15
+        if m >= 60:
+            m -= 60
+            h += 1
+        end = time(h, m)
+        availabilities.append(_avail(ALEX, Day.MONDAY, start, end, True))
+        availabilities.append(_avail(BOB, Day.MONDAY, start, end, True))
+
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=10.0, min_shift_minutes=0,
+        max_shift_minutes=480,  # 8 hours
+    )
+
+    assert shifts is not None
+    for shift in shifts:
+        assert shift.duration_hours() <= 8.0
+
+
+def test_max_shift_length_ignored_on_exact_half_or_full_days():
+    """
+    A full 9-hour Friday, single station, single person available all
+    day. max_shift_minutes=480 (8h) would normally forbid a 9-hour
+    block, but Friday is in exact_half_or_full_days, so the AM/PM/FULL
+    rule governs instead and a full 9-hour day should still be allowed.
+    """
+    day = Day.FRIDAY
+    availabilities = []
+    h, m = 8, 0
+    for _ in range(36):  # 9 hours
+        start = time(h, m)
+        m += 15
+        if m >= 60:
+            m -= 60
+            h += 1
+        end = time(h, m)
+        availabilities.append(_avail(ALEX, day, start, end, True))
+
+    day_hours = {day: (time(8, 0), time(17, 0))}
+    shifts = solve_week_schedule(
+        availabilities, day_hours, {Station.NORTH: 1},
+        min_hours=0, max_hours=9.0,
+        max_shift_minutes=480,
+        exact_half_or_full_days={Day.FRIDAY},
+    )
+
+    assert shifts is not None
+    assert len(shifts) == 1
+    assert shifts[0].duration_hours() == 9.0

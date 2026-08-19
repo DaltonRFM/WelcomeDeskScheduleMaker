@@ -50,8 +50,9 @@ STATION_CAPACITY = {
 }
 FLEXIBLE_STATIONS = {Station.DEANS_SUITE}
 ROTATION_STATIONS = [Station.NORTH, Station.SOUTH]
-MIN_HOURS = 10.0
+MIN_HOURS = 9.0
 MAX_HOURS = 13.0
+MAX_SHIFT_MINUTES = 480.0  # 8 hours -- ignored on Friday (governed by the AM/PM/FULL rule instead)
 EXACT_HALF_OR_FULL_DAYS = {Day.FRIDAY}
 
 # Lock specific people into specific Friday blocks
@@ -129,6 +130,7 @@ def main():
         station_capacity=STATION_CAPACITY,
         min_hours=MIN_HOURS,
         max_hours=MAX_HOURS,
+        max_shift_minutes=MAX_SHIFT_MINUTES,
         rotation_stations=ROTATION_STATIONS,
         flexible_stations=FLEXIBLE_STATIONS,
         exact_half_or_full_days=EXACT_HALF_OR_FULL_DAYS,
