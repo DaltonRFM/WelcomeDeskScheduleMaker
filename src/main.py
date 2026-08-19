@@ -34,7 +34,7 @@ CSV_FILES = {
     Day.FRIDAY: "data/friday_availability.csv",
 }
 
-# Hours are from 7:30am to 5pm
+# Hours are from 7:30am to 5pm then Friday 8-5pm
 DAY_OPERATING_HOURS = {
     Day.MONDAY: (time(7, 30), time(17, 0)),
     Day.TUESDAY: (time(7, 30), time(17, 0)),
@@ -54,9 +54,7 @@ MIN_HOURS = 10.0
 MAX_HOURS = 13.0
 EXACT_HALF_OR_FULL_DAYS = {Day.FRIDAY}
 
-# Lock specific people into specific Friday blocks -- e.g. new hires who
-# always cover a known Friday shift. Values are "AM" (first half),
-# "PM" (second half), or "FULL" (whole day). Add entries here as needed;
+# Lock specific people into specific Friday blocks
 # leave empty ({}) if nobody needs to be pinned this semester.
 #
 PINNED_SHIFT_BLOCKS = {
@@ -71,7 +69,7 @@ PINNED_SHIFT_BLOCKS = {
     Person(name='Reese'): {Day.FRIDAY: 'PM'}
 }
 
-# Individual shift requests -- e.g. "Dalton wants 7:30-12:30 Monday".
+# Individual shift requests -- ex: "Dalton wants 7:30-12:30 Monday".
 # SOFT: the solver tries hard to honor these but will never let a
 # request break a hard rule or block the schedule from solving. After
 # solving, a report prints showing exactly how well each request was
@@ -93,6 +91,7 @@ SHIFT_REQUESTS = {
         (Day.MONDAY, time(7, 30), time(12, 30)),
         (Day.TUESDAY, time(14, 0), time(17, 0)),
     ],
+     Person(name="Grace"): [(Day.MONDAY, time(7, 30), time(12, 30))]
 
 }
 
